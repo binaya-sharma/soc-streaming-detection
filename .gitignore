@@ -1,0 +1,12 @@
+**/__pycache__/
+**/.ipynb_checkpoints
+*.pyc
+/.env
+/.git
+.kafka-data/
+.minio-data/
+./.dockerignore
+./.gitignore
+./.vscode/
+/.DS_Store
+/structure.txt

@@ -1,0 +1,145 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports: ["2181:2181"]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    ports:
+      #- "9092:9092" # optional: expose internal listener (not needed for host)
+      - "29092:29092"  # host listener used by host to connect to Kafka :: port mapped to host
+    volumes:
+     # - kafka-data:/var/lib/kafka/data #managed by docker-compose
+     - ./kafka-data:/var/lib/kafka/data
+     
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+      - zookeeper
+    ports:
+      - "18080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  minio:
+    image: minio/minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-password}
+    command: server /data --console-address ":9001"
+    ports: ["9000:9000","9001:9001"]
+    volumes:
+      - ./minio-data:/data
+
+  # Spark streaming job (reads Kafka > writes Delta to MinIO)
+  spark-job:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.spark
+    depends_on:
+      - kafka
+      - minio
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-password}
+      S3_BUCKET: ${S3_BUCKET:-cyber}
+      PYSPARK_PYTHON: /opt/venv/bin/python
+    volumes:
+      - ./src/streaming:/app/streaming
+      - ./configs:/app/configs
+    command:
+      - /opt/bitnami/spark/bin/spark-submit
+      - --packages
+      - io.delta:delta-spark_2.12:3.2.0,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+      - --conf
+      - spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension
+      - --conf
+      - spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog
+      - --conf
+      - spark.hadoop.fs.s3a.endpoint=http://minio:9000
+      - --conf
+      - spark.hadoop.fs.s3a.path.style.access=true
+      - --conf
+      - spark.hadoop.fs.s3a.connection.ssl.enabled=false
+      - /app/streaming/stream_job.py
+      - --bootstrap
+      - kafka:9092
+      - --bronze
+      - s3a://cyber/bronze
+      - --silver
+      - s3a://cyber/silver
+      - --gold
+      - s3a://cyber/gold
+      - --cfg
+      - /app/configs/detection.yaml
+
+  # JupyterLab notebook on the same Spark image
+  spark-notebook:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.spark
+    depends_on:
+      - kafka
+      - minio
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-password}
+      S3_BUCKET: ${S3_BUCKET:-cyber}
+      PYSPARK_PYTHON: /opt/venv/bin/python
+      NB_PORT: 8888
+      NB_DIR: /workspace
+      HOME: /workspace
+      JUPYTER_RUNTIME_DIR: /workspace/.jupyter/runtime
+      JUPYTER_DATA_DIR: /workspace/.jupyter
+      JUPYTER_CONFIG_DIR: /workspace/.jupyter
+    ports:
+      - "18888:8888" #JupyterLab
+      - "4040:4040" # Spark UI for notebook-launched jobs
+    volumes:
+      - ./notebooks:/workspace
+      - ./configs:/app/configs
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p /workspace/.jupyter/runtime;
+        /opt/venv/bin/python -m ipykernel install --user --name pyspark --display-name "PySpark (Cluster)";
+        exec /opt/venv/bin/jupyter lab --ip=0.0.0.0 --port=${NB_PORT:-8888} --no-browser \
+          --NotebookApp.token='' --NotebookApp.password='' \
+          --notebook-dir=${NB_DIR:-/workspace}
+
+  python-producer:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.producer 
+    depends_on: [kafka]
+    environment:
+      PYSPARK_PYTHON: /opt/venv/bin/python
+      BOOTSTRAP: kafka:9092
+      TOPIC: auth_events
+      MODE: bruteforce
+      RATE: "20"
+      DURATION: "120"
+
+volumes:
+  kafka-data:
+  minio-data:
+
+

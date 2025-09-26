@@ -1,0 +1,48 @@
+FROM bitnami/spark:3.5.1
+
+USER root
+SHELL ["/bin/bash", "-lc"]
+
+# Python with venv --fixing PEP 668 issue
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv python3-pip ca-certificates curl tini \
+  && ln -sf /usr/bin/python3 /usr/local/bin/python \
+  && ln -sf /usr/bin/pip3 /usr/local/bin/pip
+
+#  virtualenv
+RUN python3 -m venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
+RUN chown -R 1001:1001 /opt/venv
+
+# Jupyter and libs into venv
+RUN /opt/venv/bin/pip install --no-cache-dir \
+      jupyterlab==4.2.5 \
+      ipykernel==6.29.5 \
+      delta-spark==3.2.0 \
+      pandas \
+      pyarrow \
+      pyyaml
+
+# Verifying installs
+RUN /opt/venv/bin/python -c "import ipykernel, pandas, pyarrow; print('py-deps OK')" \
+ && /opt/venv/bin/python - <<'PY'
+import importlib.util
+assert importlib.util.find_spec('jupyterlab') is not None
+print('jupyter OK')
+PY
+
+# Spark defaults (Delta + S3A)
+RUN mkdir -p /opt/bitnami/spark/conf && printf "%s\n" \
+  "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" \
+  "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" \
+  "spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem" \
+  "spark.hadoop.fs.s3a.path.style.access=true" \
+  "spark.hadoop.fs.s3a.connection.ssl.enabled=false" \
+  > /opt/bitnami/spark/conf/spark-defaults.conf
+
+# Workspace directory for notebooks
+RUN mkdir -p /app /workspace && chown -R 1001:1001 /app /workspace
+
+USER 1001
+CMD ["sleep", "infinity"]

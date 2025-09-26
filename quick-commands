@@ -1,0 +1,47 @@
+--Build fresh image
+docker compose build --no-cache
+
+--Start everything (detached)
+docker compose up -d
+
+--Stop everything
+docker compose down
+
+--View logs
+docker compose logs -f
+
+--View running containers
+docker compose ps
+
+--Access Kafka UI
+http://localhost:18080
+
+--Access MinIO
+http://localhost:9000
+User: admin
+Password: password
+
+--Run Python producer (in another terminal)
+docker compose run python-producer
+--Stop Python producer
+Ctrl + C
+--Note: This will stop the entire container
+--To stop only the producer script, find the container ID using `docker ps` and then
+docker stop <container_id>
+
+--Access Spark container shell (in another terminal)
+docker compose exec spark-job bash
+--Exit Spark container shell
+exit
+
+--Check data in MinIO (in another terminal)
+mc alias set localminio http://localhost:9000 admin password
+mc ls localminio
+mc ls localminio/cyber
+mc ls localminio/cyber/delta_table
+mc cat localminio/cyber/delta_table/_delta_log/000000000000000000.json  
+
+--Cleanup unused Docker resources
+docker system prune -a
+--Note: This will remove all stopped containers, unused networks, dangling images, and build caches
+--Use with caution if you have other Docker projects running
